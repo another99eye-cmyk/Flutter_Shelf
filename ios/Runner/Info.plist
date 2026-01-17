@@ -44,6 +44,10 @@
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<key>NSCameraUsageDescription</key>
+	<string>Allow access to camera to take profile photo</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Allow access to photo library to select profile photo</string>
 	<true/>
 </dict>
 </plist>

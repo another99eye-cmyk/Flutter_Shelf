@@ -491,8 +491,11 @@ class _AccountPageState extends State<AccountPage> {
             onPressed: () {
               final newValue = controller.text;
               setState(() => _phone = newValue.isEmpty ? null : newValue);
-              if (newValue.isNotEmpty) _saveField('shop_phone', newValue);
-              else _prefs.remove('shop_phone');
+              if (newValue.isNotEmpty) {
+                _saveField('shop_phone', newValue);
+              } else {
+                _prefs.remove('shop_phone');
+              }
               Navigator.pop(context);
             },
             child: const Text('Save'),
@@ -519,8 +522,11 @@ class _AccountPageState extends State<AccountPage> {
             onPressed: () {
               final newValue = controller.text.trim();
               setState(() => _email = newValue.isEmpty ? null : newValue);
-              if (newValue.isNotEmpty) _saveField('shop_email', newValue);
-              else _prefs.remove('shop_email');
+              if (newValue.isNotEmpty) {
+                _saveField('shop_email', newValue);
+              } else {
+                _prefs.remove('shop_email');
+              }
               Navigator.pop(context);
             },
             child: const Text('Save'),
