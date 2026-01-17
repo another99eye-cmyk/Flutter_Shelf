@@ -7,4 +7,6 @@ import Foundation
 
 import shared_preferences_foundation
 
-func RegisterGeneratedPlugins(
+func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
+  SharedPreferencesPlugin.register(with: registry.registrar(forPlugin: "SharedPreferencesPlugin"))
+}
