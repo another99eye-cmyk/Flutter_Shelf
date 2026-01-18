@@ -115,11 +115,12 @@ class _HomePageState extends State<HomePage> {
   List<Item> _filteredItems = [];
   final TextEditingController _searchController = TextEditingController();
   late SharedPreferences _prefs;
+  late Future<void> _loadFuture;
 
   @override
   void initState() {
     super.initState();
-    _initPrefsAndLoad();
+    _loadFuture = _initPrefsAndLoad();
     _searchController.addListener(_filterItems);
   }
 
@@ -136,12 +137,18 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _loadItems() async {
     final String? itemsJson = _prefs.getString('shelf_items');
+    List<Item> loadedItems = [];
+    if (itemsJson != null) {
+      try {
+        final List<dynamic> decoded = jsonDecode(itemsJson);
+        loadedItems = decoded.map((dynamic json) => Item.fromJson(json as Map<String, dynamic>)).toList();
+      } catch (e) {
+        // Handle invalid JSON gracefully
+        loadedItems = [];
+      }
+    }
     setState(() {
-      _items = itemsJson != null
-          ? (jsonDecode(itemsJson) as List<dynamic>)
-              .map((json) => Item.fromJson(json))
-              .toList()
-          : [];
+      _items = loadedItems;
     });
     _filterItems();
   }
@@ -192,7 +199,7 @@ class _HomePageState extends State<HomePage> {
             child: const Text('Cancel', style: TextStyle(color: Color(0xff8c95a2))),
           ),
           ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
               final name = nameController.text.trim();
               if (name.isEmpty) return;
               final quantity = int.tryParse(quantityController.text.trim()) ?? 1;
@@ -200,7 +207,7 @@ class _HomePageState extends State<HomePage> {
                 _items.add(Item(name: name, quantity: quantity));
               });
               _filterItems();
-              _saveItems();
+              await _saveItems();
               Navigator.pop(context);
             },
             child: const Text('Add'),
@@ -210,19 +217,19 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _updateQuantity(int index, int delta) {
+  Future<void> _updateQuantity(int index, int delta) async {
     setState(() {
       _filteredItems[index].quantity = (_filteredItems[index].quantity + delta).clamp(0, 999999);
     });
-    _saveItems();
+    await _saveItems();
   }
 
-  void _updateQuantityFromText(int index, String value) {
+  Future<void> _updateQuantityFromText(int index, String value) async {
     final newQuantity = int.tryParse(value) ?? _filteredItems[index].quantity;
     setState(() {
       _filteredItems[index].quantity = newQuantity.clamp(0, 999999);
     });
-    _saveItems();
+    await _saveItems();
   }
 
   void _deleteItem(int index) {
@@ -238,13 +245,13 @@ class _HomePageState extends State<HomePage> {
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(context);
               setState(() {
                 _items.remove(item);
               });
               _filterItems();
-              _saveItems();
+              await _saveItems();
             },
             child: const Text('Delete', style: TextStyle(color: Color(0xfff7554d))),
           ),
@@ -267,146 +274,154 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(width: 8),
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                labelText: 'Search items',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: _searchController.text.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(Icons.clear),
-                        onPressed: () {
-                          _searchController.clear();
-                          _filterItems();
-                        },
-                      )
-                    : null,
-              ),
-            ),
-          ),
-          if (_items.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Total items: ${_items.length}',
-                  style: const TextStyle(color: Color(0xff8c95a2), fontSize: 14),
+      body: FutureBuilder<void>(
+        future: _loadFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    labelText: 'Search items',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _searchController.text.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () {
+                              _searchController.clear();
+                              _filterItems();
+                            },
+                          )
+                        : null,
+                  ),
                 ),
               ),
-            ),
-          Expanded(
-            child: RefreshIndicator(
-              onRefresh: _loadItems,
-              child: _filteredItems.isEmpty
-                  ? LayoutBuilder(
-                      builder: (_, constraints) => SingleChildScrollView(
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(minHeight: constraints.maxHeight),
-                          child: IntrinsicHeight(
-                            child: Center(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.inventory,
-                                    size: 80,
-                                    color: const Color(0xff8c95a2).withOpacity(0.5),
+              if (_items.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Total items: ${_items.length}',
+                      style: const TextStyle(color: Color(0xff8c95a2), fontSize: 14),
+                    ),
+                  ),
+                ),
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: _loadItems,
+                  child: _filteredItems.isEmpty
+                      ? LayoutBuilder(
+                          builder: (_, constraints) => SingleChildScrollView(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                              child: IntrinsicHeight(
+                                child: Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.inventory,
+                                        size: 80,
+                                        color: const Color(0xff8c95a2).withOpacity(0.5),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Text(
+                                        _items.isEmpty
+                                            ? 'Your shelf is empty.\nTap + to add items!'
+                                            : 'No items match your search.',
+                                        style: const TextStyle(color: Color(0xff8c95a2), fontSize: 16),
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ],
                                   ),
-                                  const SizedBox(height: 16),
-                                  Text(
-                                    _items.isEmpty
-                                        ? 'Your shelf is empty.\nTap + to add items!'
-                                        : 'No items match your search.',
-                                    style: const TextStyle(color: Color(0xff8c95a2), fontSize: 16),
-                                    textAlign: TextAlign.center,
+                                ),
+                              ),
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          itemCount: _filteredItems.length,
+                          itemBuilder: (context, index) {
+                            final item = _filteredItems[index];
+                            return Card(
+                              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                              elevation: 3,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              child: ExpansionTile(
+                                leading: const Icon(Icons.inventory, color: Color(0xff00a68a)),
+                                title: Text(
+                                  item.name,
+                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 17),
+                                ),
+                                subtitle: const Text('Tap to adjust quantity or delete'),
+                                trailing: Text(
+                                  item.quantity.toString(),
+                                  style: TextStyle(
+                                    fontSize: 28,
+                                    fontWeight: FontWeight.bold,
+                                    color: item.quantity == 0 ? const Color(0xffffc235) : const Color(0xff00a68a),
+                                  ),
+                                ),
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        IconButton(
+                                          iconSize: 32,
+                                          icon: const Icon(Icons.remove_circle_outline, color: Color(0xffffc235)),
+                                          onPressed: () async => await _updateQuantity(index, -1),
+                                        ),
+                                        const SizedBox(width: 16),
+                                        SizedBox(
+                                          width: 80,
+                                          child: TextField(
+                                            keyboardType: TextInputType.number,
+                                            textAlign: TextAlign.center,
+                                            decoration: InputDecoration(
+                                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                              contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                                            ),
+                                            controller: TextEditingController(text: item.quantity.toString())
+                                              ..selection = TextSelection.fromPosition(
+                                                  TextPosition(offset: item.quantity.toString().length)),
+                                            onChanged: (value) async => await _updateQuantityFromText(index, value),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 16),
+                                        IconButton(
+                                          iconSize: 32,
+                                          icon: const Icon(Icons.add_circle_outline, color: Color(0xff00a68a)),
+                                          onPressed: () async => await _updateQuantity(index, 1),
+                                        ),
+                                        const SizedBox(width: 32),
+                                        IconButton(
+                                          iconSize: 32,
+                                          icon: const Icon(Icons.delete_outline, color: Color(0xfff7554d)),
+                                          onPressed: () => _deleteItem(index),
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ],
                               ),
-                            ),
-                          ),
+                            );
+                          },
                         ),
-                      ),
-                    )
-                  : ListView.builder(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      itemCount: _filteredItems.length,
-                      itemBuilder: (context, index) {
-                        final item = _filteredItems[index];
-                        return Card(
-                          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                          elevation: 3,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                          child: ExpansionTile(
-                            leading: const Icon(Icons.inventory, color: Color(0xff00a68a)),
-                            title: Text(
-                              item.name,
-                              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 17),
-                            ),
-                            subtitle: const Text('Tap to adjust quantity or delete'),
-                            trailing: Text(
-                              item.quantity.toString(),
-                              style: TextStyle(
-                                fontSize: 28,
-                                fontWeight: FontWeight.bold,
-                                color: item.quantity == 0 ? const Color(0xffffc235) : const Color(0xff00a68a),
-                              ),
-                            ),
-                            children: [
-                              Padding(
-                                padding: const EdgeInsets.all(16),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    IconButton(
-                                      iconSize: 32,
-                                      icon: const Icon(Icons.remove_circle_outline, color: Color(0xffffc235)),
-                                      onPressed: () => _updateQuantity(index, -1),
-                                    ),
-                                    const SizedBox(width: 16),
-                                    SizedBox(
-                                      width: 80,
-                                      child: TextField(
-                                        keyboardType: TextInputType.number,
-                                        textAlign: TextAlign.center,
-                                        decoration: InputDecoration(
-                                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                                          contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                                        ),
-                                        controller: TextEditingController(text: item.quantity.toString())
-                                          ..selection = TextSelection.fromPosition(
-                                              TextPosition(offset: item.quantity.toString().length)),
-                                        onChanged: (value) => _updateQuantityFromText(index, value),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 16),
-                                    IconButton(
-                                      iconSize: 32,
-                                      icon: const Icon(Icons.add_circle_outline, color: Color(0xff00a68a)),
-                                      onPressed: () => _updateQuantity(index, 1),
-                                    ),
-                                    const SizedBox(width: 32),
-                                    IconButton(
-                                      iconSize: 32,
-                                      icon: const Icon(Icons.delete_outline, color: Color(0xfff7554d)),
-                                      onPressed: () => _deleteItem(index),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
-            ),
-          ),
-        ],
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
