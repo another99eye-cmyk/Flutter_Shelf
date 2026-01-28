@@ -1,13 +1,9 @@
 // main.dart
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'dart:async';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+void main() {
   runApp(const MyApp());
 }
 
@@ -53,161 +49,8 @@ class MyApp extends StatelessWidget {
           suffixIconColor: const Color(0xff8c95a2),
         ),
       ),
-      home: const AuthWrapper(),
+      home: const MainScreen(),
       debugShowCheckedModeBanner: false,
-    );
-  }
-}
-
-class AuthWrapper extends StatelessWidget {
-  const AuthWrapper({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        if (snapshot.hasData) {
-          return const MainScreen();
-        }
-        return const LoginPage();
-      },
-    );
-  }
-}
-
-class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
-
-  @override
-  State<LoginPage> createState() => _LoginPageState();
-}
-
-class _LoginPageState extends State<LoginPage> {
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
-  final _confirmPasswordController = TextEditingController();
-  bool _isLogin = true;
-  bool _loading = false;
-  String? _error;
-
-  @override
-  void dispose() {
-    _emailController.dispose();
-    _passwordController.dispose();
-    _confirmPasswordController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _authenticate() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-
-    try {
-      final email = _emailController.text.trim();
-      final password = _passwordController.text;
-
-      if (email.isEmpty || password.isEmpty) {
-        throw 'Please fill in all fields';
-      }
-
-      if (!_isLogin) {
-        final confirm = _confirmPasswordController.text;
-        if (password != confirm) throw 'Passwords do not match';
-      }
-
-      if (_isLogin) {
-        await FirebaseAuth.instance.signInWithEmailAndPassword(
-          email: email,
-          password: password,
-        );
-      } else {
-        final cred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
-          email: email,
-          password: password,
-        );
-        // Create default profile for new user
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(cred.user!.uid)
-            .set({'shop_name': 'My Shelf Shop'}, SetOptions(merge: true));
-      }
-    } on FirebaseAuthException catch (e) {
-      setState(() {
-        _error = e.message ?? 'Authentication error';
-      });
-    } catch (e) {
-      setState(() {
-        _error = e.toString();
-      });
-    } finally {
-      setState(() => _loading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.inventory_2, size: 100, color: Theme.of(context).primaryColor),
-              const SizedBox(height: 24),
-              const Text('Shelf App', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              Text(_isLogin ? 'Welcome back' : 'Create an account', style: const TextStyle(fontSize: 20)),
-              const SizedBox(height: 32),
-              TextField(
-                controller: _emailController,
-                keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(labelText: 'Email'),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _passwordController,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Password'),
-              ),
-              if (!_isLogin) ...[
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _confirmPasswordController,
-                  obscureText: true,
-                  decoration: const InputDecoration(labelText: 'Confirm Password'),
-                ),
-              ],
-              if (_error != null) ...[
-                const SizedBox(height: 16),
-                Text(_error!, style: const TextStyle(color: Colors.red)),
-              ],
-              const SizedBox(height: 32),
-              _loading
-                  ? const CircularProgressIndicator()
-                  : SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: _authenticate,
-                        style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
-                        child: Text(_isLogin ? 'Login' : 'Sign Up'),
-                      ),
-                    ),
-              const SizedBox(height: 16),
-              TextButton(
-                onPressed: () => setState(() => _isLogin = !_isLogin),
-                child: Text(_isLogin ? "Don't have an account? Sign up" : 'Already have an account? Login'),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }
@@ -247,11 +90,17 @@ class _MainScreenState extends State<MainScreen> {
 }
 
 class Item {
-  final String id;
-  final String name;
+  String name;
   int quantity;
 
-  Item({required this.id, required this.name, required this.quantity});
+  Item({required this.name, required this.quantity});
+
+  factory Item.fromJson(Map<String, dynamic> json) => Item(
+        name: json['name'] as String,
+        quantity: json['quantity'] as int,
+      );
+
+  Map<String, dynamic> toJson() => {'name': name, 'quantity': quantity};
 }
 
 class HomePage extends StatefulWidget {
@@ -262,18 +111,22 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  List<Item> _allItems = [];
+  List<Item> _items = [];
   List<Item> _filteredItems = [];
   final TextEditingController _searchController = TextEditingController();
-
-  User? get _currentUser => FirebaseAuth.instance.currentUser;
-  CollectionReference get _itemsRef =>
-      FirebaseFirestore.instance.collection('users').doc(_currentUser!.uid).collection('items');
+  late SharedPreferences _prefs;
+  late Future<void> _loadFuture;
 
   @override
   void initState() {
     super.initState();
+    _loadFuture = _initPrefsAndLoad();
     _searchController.addListener(_filterItems);
+  }
+
+  Future<void> _initPrefsAndLoad() async {
+    _prefs = await SharedPreferences.getInstance();
+    await _loadItems();
   }
 
   @override
@@ -282,19 +135,40 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
+  Future<void> _loadItems() async {
+    final String? itemsJson = _prefs.getString('shelf_items');
+    List<Item> loadedItems = [];
+    if (itemsJson != null) {
+      try {
+        final List<dynamic> decoded = jsonDecode(itemsJson);
+        loadedItems = decoded.map((dynamic json) => Item.fromJson(json as Map<String, dynamic>)).toList();
+      } catch (e) {
+        // Handle invalid JSON gracefully
+        loadedItems = [];
+      }
+    }
+    setState(() {
+      _items = loadedItems;
+    });
+    _filterItems();
+  }
+
+  Future<void> _saveItems() async {
+    final String itemsJson = jsonEncode(_items.map((e) => e.toJson()).toList());
+    await _prefs.setString('shelf_items', itemsJson);
+  }
+
   void _filterItems() {
     final query = _searchController.text.toLowerCase().trim();
-    final filtered = _allItems
-        .where((item) => item.name.toLowerCase().contains(query))
-        .toList()
-      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-
     setState(() {
-      _filteredItems = filtered;
+      _filteredItems = _items
+          .where((item) => item.name.toLowerCase().contains(query))
+          .toList()
+        ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     });
   }
 
-  Future<void> _addItem() async {
+  void _addItem() {
     final nameController = TextEditingController();
     final quantityController = TextEditingController(text: '1');
 
@@ -329,12 +203,11 @@ class _HomePageState extends State<HomePage> {
               final name = nameController.text.trim();
               if (name.isEmpty) return;
               final quantity = int.tryParse(quantityController.text.trim()) ?? 1;
-
-              await _itemsRef.add({
-                'name': name,
-                'quantity': quantity,
+              setState(() {
+                _items.add(Item(name: name, quantity: quantity));
               });
-
+              _filterItems();
+              await _saveItems();
               Navigator.pop(context);
             },
             child: const Text('Add'),
@@ -344,45 +217,47 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Future<void> _increment(Item item) async {
-    await _itemsRef.doc(item.id).update({'quantity': FieldValue.increment(1)});
+  Future<void> _updateQuantity(int index, int delta) async {
+    setState(() {
+      _filteredItems[index].quantity = (_filteredItems[index].quantity + delta).clamp(0, 999999);
+    });
+    await _saveItems();
   }
 
-  Future<void> _decrement(Item item) async {
-    if (item.quantity > 0) {
-      await _itemsRef.doc(item.id).update({'quantity': FieldValue.increment(-1)});
-    }
+  Future<void> _updateQuantityFromText(int index, String value) async {
+    final newQuantity = int.tryParse(value) ?? _filteredItems[index].quantity;
+    setState(() {
+      _filteredItems[index].quantity = newQuantity.clamp(0, 999999);
+    });
+    await _saveItems();
   }
 
-  Future<void> _setQuantityFromText(Item item, String value) async {
-    final newQuantity = int.tryParse(value);
-    if (newQuantity != null) {
-      final clamped = newQuantity.clamp(0, 999999);
-      if (clamped != item.quantity) {
-        await _itemsRef.doc(item.id).update({'quantity': clamped});
-      }
-    }
-  }
-
-  Future<void> _deleteItem(Item item) async {
-    final confirmed = await showDialog<bool>(
+  void _deleteItem(int index) {
+    final item = _filteredItems[index];
+    showDialog(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Confirm Delete'),
         content: Text('Remove "${item.name}" (Quantity: ${item.quantity}) from your shelf?'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
           TextButton(
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              setState(() {
+                _items.remove(item);
+              });
+              _filterItems();
+              await _saveItems();
+            },
             child: const Text('Delete', style: TextStyle(color: Color(0xfff7554d))),
           ),
         ],
       ),
     );
-
-    if (confirmed == true) {
-      await _itemsRef.doc(item.id).delete();
-    }
   }
 
   @override
@@ -399,169 +274,154 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(width: 8),
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                labelText: 'Search items',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: _searchController.text.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(Icons.clear),
-                        onPressed: () {
-                          _searchController.clear();
-                          _filterItems();
-                        },
-                      )
-                    : null,
-              ),
-            ),
-          ),
-          if (_allItems.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Total items: ${_allItems.length}',
-                  style: const TextStyle(color: Color(0xff8c95a2), fontSize: 14),
+      body: FutureBuilder<void>(
+        future: _loadFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    labelText: 'Search items',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _searchController.text.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () {
+                              _searchController.clear();
+                              _filterItems();
+                            },
+                          )
+                        : null,
+                  ),
                 ),
               ),
-            ),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: _itemsRef.snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.hasError) {
-                  return Center(child: Text('Error: ${snapshot.error}'));
-                }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty && _allItems.isEmpty) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-
-                final docs = snapshot.data!.docs;
-                _allItems = docs.map((doc) {
-                  final data = doc.data() as Map<String, dynamic>;
-                  return Item(
-                    id: doc.id,
-                    name: data['name'] ?? '',
-                    quantity: (data['quantity'] as num?)?.toInt() ?? 0,
-                  );
-                }).toList();
-
-                _filterItems();
-
-                if (_filteredItems.isEmpty) {
-                  return LayoutBuilder(
-                    builder: (_, constraints) => SingleChildScrollView(
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(minHeight: constraints.maxHeight),
-                        child: IntrinsicHeight(
-                          child: Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.inventory,
-                                  size: 80,
-                                  color: const Color(0xff8c95a2).withOpacity(0.5),
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  _allItems.isEmpty
-                                      ? 'Your shelf is empty.\nTap + to add items!'
-                                      : 'No items match your search.',
-                                  style: const TextStyle(color: Color(0xff8c95a2), fontSize: 16),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
+              if (_items.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Total items: ${_items.length}',
+                      style: const TextStyle(color: Color(0xff8c95a2), fontSize: 14),
                     ),
-                  );
-                }
-
-                return ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  itemCount: _filteredItems.length,
-                  itemBuilder: (context, index) {
-                    final item = _filteredItems[index];
-                    return Card(
-                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                      elevation: 3,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      child: ExpansionTile(
-                        leading: const Icon(Icons.inventory, color: Color(0xff00a68a)),
-                        title: Text(
-                          item.name,
-                          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 17),
-                        ),
-                        subtitle: const Text('Tap to adjust quantity or delete'),
-                        trailing: Text(
-                          item.quantity.toString(),
-                          style: TextStyle(
-                            fontSize: 28,
-                            fontWeight: FontWeight.bold,
-                            color: item.quantity == 0 ? const Color(0xffffc235) : const Color(0xff00a68a),
-                          ),
-                        ),
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                IconButton(
-                                  iconSize: 32,
-                                  icon: const Icon(Icons.remove_circle_outline, color: Color(0xffffc235)),
-                                  onPressed: item.quantity > 0 ? () => _decrement(item) : null,
-                                ),
-                                const SizedBox(width: 16),
-                                SizedBox(
-                                  width: 80,
-                                  child: TextField(
-                                    keyboardType: TextInputType.number,
-                                    textAlign: TextAlign.center,
-                                    decoration: InputDecoration(
-                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                                      contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                                    ),
-                                    controller: TextEditingController(text: item.quantity.toString())
-                                      ..selection = TextSelection.fromPosition(
-                                          TextPosition(offset: item.quantity.toString().length)),
-                                    onChanged: (value) => _setQuantityFromText(item, value),
+                  ),
+                ),
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: _loadItems,
+                  child: _filteredItems.isEmpty
+                      ? LayoutBuilder(
+                          builder: (_, constraints) => SingleChildScrollView(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                              child: IntrinsicHeight(
+                                child: Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.inventory,
+                                        size: 80,
+                                        color: const Color(0xff8c95a2).withOpacity(0.5),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Text(
+                                        _items.isEmpty
+                                            ? 'Your shelf is empty.\nTap + to add items!'
+                                            : 'No items match your search.',
+                                        style: const TextStyle(color: Color(0xff8c95a2), fontSize: 16),
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ],
                                   ),
                                 ),
-                                const SizedBox(width: 16),
-                                IconButton(
-                                  iconSize: 32,
-                                  icon: const Icon(Icons.add_circle_outline, color: Color(0xff00a68a)),
-                                  onPressed: () => _increment(item),
-                                ),
-                                const SizedBox(width: 32),
-                                IconButton(
-                                  iconSize: 32,
-                                  icon: const Icon(Icons.delete_outline, color: Color(0xfff7554d)),
-                                  onPressed: () => _deleteItem(item),
-                                ),
-                              ],
+                              ),
                             ),
                           ),
-                        ],
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ],
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          itemCount: _filteredItems.length,
+                          itemBuilder: (context, index) {
+                            final item = _filteredItems[index];
+                            return Card(
+                              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                              elevation: 3,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              child: ExpansionTile(
+                                leading: const Icon(Icons.inventory, color: Color(0xff00a68a)),
+                                title: Text(
+                                  item.name,
+                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 17),
+                                ),
+                                subtitle: const Text('Tap to adjust quantity or delete'),
+                                trailing: Text(
+                                  item.quantity.toString(),
+                                  style: TextStyle(
+                                    fontSize: 28,
+                                    fontWeight: FontWeight.bold,
+                                    color: item.quantity == 0 ? const Color(0xffffc235) : const Color(0xff00a68a),
+                                  ),
+                                ),
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        IconButton(
+                                          iconSize: 32,
+                                          icon: const Icon(Icons.remove_circle_outline, color: Color(0xffffc235)),
+                                          onPressed: () async => await _updateQuantity(index, -1),
+                                        ),
+                                        const SizedBox(width: 16),
+                                        SizedBox(
+                                          width: 80,
+                                          child: TextField(
+                                            keyboardType: TextInputType.number,
+                                            textAlign: TextAlign.center,
+                                            decoration: InputDecoration(
+                                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                              contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                                            ),
+                                            controller: TextEditingController(text: item.quantity.toString())
+                                              ..selection = TextSelection.fromPosition(
+                                                  TextPosition(offset: item.quantity.toString().length)),
+                                            onChanged: (value) async => await _updateQuantityFromText(index, value),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 16),
+                                        IconButton(
+                                          iconSize: 32,
+                                          icon: const Icon(Icons.add_circle_outline, color: Color(0xff00a68a)),
+                                          onPressed: () async => await _updateQuantity(index, 1),
+                                        ),
+                                        const SizedBox(width: 32),
+                                        IconButton(
+                                          iconSize: 32,
+                                          icon: const Icon(Icons.delete_outline, color: Color(0xfff7554d)),
+                                          onPressed: () => _deleteItem(index),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -576,40 +436,27 @@ class AccountPage extends StatefulWidget {
 
 class _AccountPageState extends State<AccountPage> {
   String? _shopName;
-  String? _shopPhone;
-  String? _shopEmail;
-
-  late final DocumentReference _userDoc;
-  
-  get _itemsRef => null;
+  String? _phone;
+  String? _email;
+  late SharedPreferences _prefs;
 
   @override
   void initState() {
     super.initState();
-    final uid = FirebaseAuth.instance.currentUser!.uid;
-    _userDoc = FirebaseFirestore.instance.collection('users').doc(uid);
     _loadAccountInfo();
   }
 
   Future<void> _loadAccountInfo() async {
-    final snap = await _userDoc.get();
-    final data = snap.data() as Map<String, dynamic>?;
+    _prefs = await SharedPreferences.getInstance();
     setState(() {
-      _shopName = data?['shop_name'] as String? ?? 'My Shelf Shop';
-      _shopPhone = data?['shop_phone'] as String?;
-      _shopEmail = data?['shop_email'] as String?;
+      _shopName = _prefs.getString('shop_name') ?? 'My Shelf Shop';
+      _phone = _prefs.getString('shop_phone');
+      _email = _prefs.getString('shop_email');
     });
   }
 
-  Future<void> _saveField(String key, String? value) async {
-    final Map<String, dynamic> updateData = {};
-    if (value == null || value.isEmpty) {
-      updateData[key] = FieldValue.delete();
-    } else {
-      updateData[key] = value.trim();
-    }
-    await _userDoc.set(updateData, SetOptions(merge: true));
-    await _loadAccountInfo(); // refresh UI
+  Future<void> _saveField(String key, String value) async {
+    await _prefs.setString(key, value.trim());
   }
 
   void _editShopName() {
@@ -630,6 +477,7 @@ class _AccountPageState extends State<AccountPage> {
             onPressed: () {
               final newValue = controller.text.trim();
               if (newValue.isNotEmpty) {
+                setState(() => _shopName = newValue);
                 _saveField('shop_name', newValue);
               }
               Navigator.pop(context);
@@ -642,7 +490,7 @@ class _AccountPageState extends State<AccountPage> {
   }
 
   void _editPhone() {
-    final controller = TextEditingController(text: _shopPhone ?? '');
+    final controller = TextEditingController(text: _phone);
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -657,7 +505,12 @@ class _AccountPageState extends State<AccountPage> {
           ElevatedButton(
             onPressed: () {
               final newValue = controller.text;
-              _saveField('shop_phone', newValue.isEmpty ? null : newValue);
+              setState(() => _phone = newValue.isEmpty ? null : newValue);
+              if (newValue.isNotEmpty) {
+                _saveField('shop_phone', newValue);
+              } else {
+                _prefs.remove('shop_phone');
+              }
               Navigator.pop(context);
             },
             child: const Text('Save'),
@@ -668,7 +521,7 @@ class _AccountPageState extends State<AccountPage> {
   }
 
   void _editEmail() {
-    final controller = TextEditingController(text: _shopEmail ?? '');
+    final controller = TextEditingController(text: _email);
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -683,7 +536,12 @@ class _AccountPageState extends State<AccountPage> {
           ElevatedButton(
             onPressed: () {
               final newValue = controller.text.trim();
-              _saveField('shop_email', newValue.isEmpty ? null : newValue);
+              setState(() => _email = newValue.isEmpty ? null : newValue);
+              if (newValue.isNotEmpty) {
+                _saveField('shop_email', newValue);
+              } else {
+                _prefs.remove('shop_email');
+              }
               Navigator.pop(context);
             },
             child: const Text('Save'),
@@ -693,43 +551,32 @@ class _AccountPageState extends State<AccountPage> {
     );
   }
 
-  Future<void> _clearShelf() async {
-    final confirmed = await showDialog<bool>(
+  void _clearShelf() {
+    showDialog(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Clear Entire Shelf?'),
         content: const Text('This will permanently delete all items from your shelf. This action cannot be undone.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
           TextButton(
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () async {
+              Navigator.pop(context);
+              await _prefs.remove('shelf_items');
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Shelf cleared successfully! Switch to Home and pull down to refresh.'),
+                    backgroundColor: Color(0xff00a68a),
+                  ),
+                );
+              }
+            },
             child: const Text('Clear Shelf', style: TextStyle(color: Color(0xfff7554d))),
           ),
         ],
       ),
     );
-
-    if (confirmed == true) {
-      final query = await _itemsRef.get();
-      final batch = FirebaseFirestore.instance.batch();
-      for (final doc in query.docs) {
-        batch.delete(doc.reference);
-      }
-      await batch.commit();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Shelf cleared successfully!'),
-            backgroundColor: Color(0xff00a68a),
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _logout() async {
-    await FirebaseAuth.instance.signOut();
   }
 
   @override
@@ -739,6 +586,7 @@ class _AccountPageState extends State<AccountPage> {
       body: SingleChildScrollView(
         child: Column(
           children: [
+            // Profile Header
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 40),
@@ -759,13 +607,14 @@ class _AccountPageState extends State<AccountPage> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    _shopEmail ?? 'No email set',
+                    _email ?? 'No email set',
                     style: const TextStyle(fontSize: 16, color: Color(0xff8c95a2)),
                   ),
                 ],
               ),
             ),
             const SizedBox(height: 24),
+            // Editable Fields
             ListTile(
               leading: const Icon(Icons.store, color: Color(0xff00a68a)),
               title: const Text('Shop Name'),
@@ -776,23 +625,18 @@ class _AccountPageState extends State<AccountPage> {
             ListTile(
               leading: const Icon(Icons.phone, color: Color(0xff00a68a)),
               title: const Text('Phone Number'),
-              subtitle: Text(_shopPhone ?? 'Not set'),
+              subtitle: Text(_phone ?? 'Not set'),
               trailing: IconButton(icon: const Icon(Icons.edit), onPressed: _editPhone),
             ),
             const Divider(height: 1),
             ListTile(
               leading: const Icon(Icons.email, color: Color(0xff00a68a)),
               title: const Text('Email'),
-              subtitle: Text(_shopEmail ?? 'Not set'),
+              subtitle: Text(_email ?? 'Not set'),
               trailing: IconButton(icon: const Icon(Icons.edit), onPressed: _editEmail),
             ),
-            const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.logout, color: Color(0xfff7554d)),
-              title: const Text('Logout'),
-              onTap: _logout,
-            ),
             const SizedBox(height: 32),
+            // Clear Shelf Button
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: SizedBox(
@@ -808,6 +652,7 @@ class _AccountPageState extends State<AccountPage> {
               ),
             ),
             const SizedBox(height: 40),
+            // Premium Card
             Card(
               margin: const EdgeInsets.symmetric(horizontal: 16),
               elevation: 4,
@@ -839,6 +684,7 @@ class _AccountPageState extends State<AccountPage> {
                         padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
                       ),
                       onPressed: () {
+                        // Placeholder for future premium upgrade
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(content: Text('Premium upgrade coming soon!')),
                         );
