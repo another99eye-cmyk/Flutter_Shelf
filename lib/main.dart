@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'package:flutter_paystack/flutter_paystack.dart'; // Added for Paystack integration
 
 void main() {
   runApp(const MyApp());
@@ -116,6 +117,7 @@ class _HomePageState extends State<HomePage> {
   final TextEditingController _searchController = TextEditingController();
   late SharedPreferences _prefs;
   late Future<void> _loadFuture;
+  bool isPremium = false; // Added for premium mode
 
   @override
   void initState() {
@@ -126,6 +128,7 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _initPrefsAndLoad() async {
     _prefs = await SharedPreferences.getInstance();
+    isPremium = _prefs.getBool('isPremium') ?? false; // Load premium status
     await _loadItems();
   }
 
@@ -264,7 +267,7 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('My Shelf'),
+        title: Text(isPremium ? 'My Shelf (Premium)' : 'My Shelf'), // Visual change: Add (Premium) to title
         actions: [
           IconButton(
             icon: const Icon(Icons.add_circle_outline),
@@ -355,6 +358,7 @@ class _HomePageState extends State<HomePage> {
                               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                               elevation: 3,
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              color: isPremium ? const Color(0xfffffae6) : null, // Visual change: Light gold background for premium cards
                               child: ExpansionTile(
                                 leading: const Icon(Icons.inventory, color: Color(0xff00a68a)),
                                 title: Text(
@@ -439,6 +443,7 @@ class _AccountPageState extends State<AccountPage> {
   String? _phone;
   String? _email;
   late SharedPreferences _prefs;
+  bool isPremium = false; // Added for premium mode
 
   @override
   void initState() {
@@ -452,6 +457,7 @@ class _AccountPageState extends State<AccountPage> {
       _shopName = _prefs.getString('shop_name') ?? 'My Shelf Shop';
       _phone = _prefs.getString('shop_phone');
       _email = _prefs.getString('shop_email');
+      isPremium = _prefs.getBool('isPremium') ?? false; // Load premium status
     });
   }
 
@@ -579,6 +585,46 @@ class _AccountPageState extends State<AccountPage> {
     );
   }
 
+  // Added: Method to handle Paystack upgrade
+  Future<void> _upgradeToPremium() async {
+    final plugin = PaystackPlugin();
+    plugin.initialize(publicKey: 'pk_test_42104476a0251e04ee634d002276cb1be9941fcc'); // REPLACE with your Paystack test public key
+
+    final reference = 'ref_${DateTime.now().millisecondsSinceEpoch}';
+    final charge = Charge()
+      ..amount = 50 // 50 pesewas (0.50 GHS) - minimal for dev; change to 1000 for 10 NGN if using 'NGN'
+      ..currency = 'GHS' // Ghanaian Cedi; change to 'NGN' if needed
+      ..reference = reference
+      ..email = _email ?? 'test@example.com'; // Use saved email or dummy
+
+    try {
+      final response = await plugin.checkout(
+        context,
+        method: CheckoutMethod.card, // Can change to .selectable or .bank
+        charge: charge,
+      );
+
+      if (response.status) {
+        // Payment success (for dev, set premium directly; in prod, verify on backend)
+        setState(() {
+          isPremium = true;
+        });
+        await _prefs.setBool('isPremium', true);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Premium unlocked successfully!'), backgroundColor: Colors.green),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Payment failed: ${response.message}'), backgroundColor: Colors.red),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -586,7 +632,7 @@ class _AccountPageState extends State<AccountPage> {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // Profile Header
+            // Profile Header (Visual change: Gold background and Premium label if premium)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 40),
@@ -597,7 +643,7 @@ class _AccountPageState extends State<AccountPage> {
                 children: [
                   CircleAvatar(
                     radius: 60,
-                    backgroundColor: const Color(0xff00a68a),
+                    backgroundColor: isPremium ? const Color(0xffffc235) : const Color(0xff00a68a), // Visual change: Gold for premium
                     child: const Icon(Icons.store_mall_directory, size: 80, color: Color(0xfff8f8f7)),
                   ),
                   const SizedBox(height: 16),
@@ -605,6 +651,11 @@ class _AccountPageState extends State<AccountPage> {
                     _shopName ?? 'My Shelf Shop',
                     style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xff333e50)),
                   ),
+                  if (isPremium) // Visual change: Add Premium User label
+                    const Text(
+                      'Premium User',
+                      style: TextStyle(fontSize: 16, color: Color(0xff00a68a), fontWeight: FontWeight.bold),
+                    ),
                   const SizedBox(height: 8),
                   Text(
                     _email ?? 'No email set',
@@ -652,7 +703,7 @@ class _AccountPageState extends State<AccountPage> {
               ),
             ),
             const SizedBox(height: 40),
-            // Premium Card
+            // Premium Card (Edited: Conditional UI based on isPremium)
             Card(
               margin: const EdgeInsets.symmetric(horizontal: 16),
               elevation: 4,
@@ -662,11 +713,15 @@ class _AccountPageState extends State<AccountPage> {
                 padding: const EdgeInsets.all(24),
                 child: Column(
                   children: [
-                    const Icon(Icons.star_border_purple500_sharp, size: 60, color: Color(0xffffc235)),
+                    Icon(
+                      isPremium ? Icons.star : Icons.star_border_purple500_sharp,
+                      size: 60,
+                      color: const Color(0xffffc235),
+                    ),
                     const SizedBox(height: 16),
-                    const Text(
-                      'Go Premium',
-                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xff333e50)),
+                    Text(
+                      isPremium ? 'Premium Member' : 'Go Premium',
+                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xff333e50)),
                     ),
                     const SizedBox(height: 12),
                     const Text(
@@ -679,18 +734,14 @@ class _AccountPageState extends State<AccountPage> {
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 24),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                    if (!isPremium) // Show upgrade button only if not premium
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                        ),
+                        onPressed: _upgradeToPremium, // Triggers Paystack payment
+                        child: const Text('Upgrade Now (0.50 GHS)', style: TextStyle(fontSize: 16)), // Display minimal price
                       ),
-                      onPressed: () {
-                        // Placeholder for future premium upgrade
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Premium upgrade coming soon!')),
-                        );
-                      },
-                      child: const Text('Upgrade Now', style: TextStyle(fontSize: 16)),
-                    ),
                   ],
                 ),
               ),
