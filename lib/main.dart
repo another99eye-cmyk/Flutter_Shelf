@@ -116,12 +116,14 @@ class Item {
   int quantity;
   double price;
   List<HistoryEntry> history;
+  bool deleted;
 
   Item({
     required this.name,
     required this.quantity,
     required this.price,
     List<HistoryEntry>? history,
+    this.deleted = false,
   }) : history = history ?? [];
 
   factory Item.fromJson(Map<String, dynamic> json) => Item(
@@ -131,6 +133,7 @@ class Item {
         history: (json['history'] as List<dynamic>? ?? [])
             .map((e) => HistoryEntry.fromJson(e as Map<String, dynamic>))
             .toList(),
+        deleted: json['deleted'] as bool? ?? false,
       );
 
   Map<String, dynamic> toJson() => {
@@ -138,6 +141,7 @@ class Item {
         'quantity': quantity,
         'price': price,
         'history': history.map((e) => e.toJson()).toList(),
+        'deleted': deleted,
       };
 }
 
@@ -149,7 +153,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  List<Item> _items = [];
+  List<Item> _allItems = [];
   List<Item> _filteredItems = [];
   final TextEditingController _searchController = TextEditingController();
   late SharedPreferences _prefs;
@@ -190,20 +194,20 @@ class _HomePageState extends State<HomePage> {
         loadedItems = decoded.map((j) => Item.fromJson(j)).toList();
       } catch (_) {}
     }
-    setState(() => _items = loadedItems);
+    setState(() => _allItems = loadedItems);
     _filterItems();
   }
 
   Future<void> _saveItems() async {
-    final String itemsJson = jsonEncode(_items.map((e) => e.toJson()).toList());
+    final String itemsJson = jsonEncode(_allItems.map((e) => e.toJson()).toList());
     await _prefs.setString('shelf_items', itemsJson);
   }
 
   void _filterItems() {
     final query = _searchController.text.toLowerCase().trim();
     setState(() {
-      _filteredItems = _items
-          .where((item) => item.name.toLowerCase().contains(query))
+      _filteredItems = _allItems
+          .where((item) => !item.deleted && item.name.toLowerCase().contains(query))
           .toList()
         ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     });
@@ -249,16 +253,66 @@ class _HomePageState extends State<HomePage> {
             onPressed: () async {
               final name = nameController.text.trim();
               if (name.isEmpty) return;
+              final lowerName = name.toLowerCase();
+              final deletedMatch = _allItems.firstWhere(
+                (i) => i.deleted && i.name.toLowerCase() == lowerName,
+                orElse: () => Item(name: '', quantity: 0, price: 0.0),
+              );
+              if (deletedMatch.name.isNotEmpty) {
+                final restore = await showDialog<bool>(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: const Text('Restore Item?'),
+                    content: Text('"$name" was previously deleted. Restore it?'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Create New')),
+                      ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Restore')),
+                    ],
+                  ),
+                );
+                if (restore == true) {
+                  deletedMatch.deleted = false;
+                  await _saveItems();
+                  _filterItems();
+                  Navigator.pop(context);
+                  return;
+                }
+              }
               final quantity = int.tryParse(quantityController.text.trim()) ?? 1;
               final price = double.tryParse(priceController.text.trim()) ?? 0.0;
               setState(() {
-                _items.add(Item(name: name, quantity: quantity, price: price));
+                _allItems.add(Item(name: name, quantity: quantity, price: price));
               });
               _filterItems();
               await _saveItems();
               Navigator.pop(context);
             },
             child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _softDeleteItem(int index) {
+    final item = _filteredItems[index];
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Confirm Delete'),
+        content: Text('Move "${item.name}" to deleted items?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              setState(() {
+                item.deleted = true;
+              });
+              _filterItems();
+              await _saveItems();
+            },
+            child: const Text('Delete', style: TextStyle(color: Color(0xfff7554d))),
           ),
         ],
       ),
@@ -272,34 +326,6 @@ class _HomePageState extends State<HomePage> {
       _qtyControllers[item]!.text = _tempQuantities[item]!.toString();
       setState(() {});
     }
-  }
-
-  void _deleteItem(int index) {
-    final item = _filteredItems[index];
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Confirm Delete'),
-        content: Text('Remove "${item.name}" (Quantity: ${item.quantity}) from your shelf?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              setState(() {
-                _items.remove(item);
-              });
-              _filterItems();
-              await _saveItems();
-            },
-            child: const Text('Delete', style: TextStyle(color: Color(0xfff7554d))),
-          ),
-        ],
-      ),
-    );
   }
 
   // ================= HISTORY CHART (per item) =================
@@ -346,6 +372,75 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  void _showAdvancedDialog(Item item) {
+    _tempPrices[item] = item.price;
+    _priceControllers[item] = TextEditingController(text: item.price.toStringAsFixed(2));
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Advanced: ${item.name}'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text('Price (GHC): ', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  const SizedBox(width: 16),
+                  SizedBox(
+                    width: 120,
+                    child: TextField(
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
+                      textAlign: TextAlign.center,
+                      decoration: InputDecoration(
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      controller: _priceControllers[item],
+                      onChanged: (value) {
+                        final newPrice = double.tryParse(value) ?? item.price;
+                        _tempPrices[item] = newPrice;
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Quantity History', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+                  Text('${item.history.length} changes', style: const TextStyle(color: Color(0xff8c95a2))),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (item.history.isEmpty)
+                const Text('No changes yet – adjust quantity to start tracking', style: TextStyle(color: Color(0xff8c95a2)))
+              else
+                SizedBox(height: 220, child: _buildHistoryChart(item)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              final newPrice = _tempPrices[item] ?? item.price;
+              if (newPrice != item.price) {
+                item.price = newPrice;
+                await _saveItems();
+              }
+              Navigator.pop(ctx);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -387,13 +482,13 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
               ),
-              if (_items.isNotEmpty)
+              if (_allItems.where((i) => !i.deleted).isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
-                      'Total items: ${_items.length}',
+                      'Total items: ${_allItems.where((i) => !i.deleted).length}',
                       style: const TextStyle(color: Color(0xff8c95a2), fontSize: 14),
                     ),
                   ),
@@ -419,7 +514,7 @@ class _HomePageState extends State<HomePage> {
                                       ),
                                       const SizedBox(height: 16),
                                       Text(
-                                        _items.isEmpty
+                                        _allItems.where((i) => !i.deleted).isEmpty
                                             ? 'Your shelf is empty.\nTap + to add items!'
                                             : 'No items match your search.',
                                         style: const TextStyle(color: Color(0xff8c95a2), fontSize: 16),
@@ -441,9 +536,6 @@ class _HomePageState extends State<HomePage> {
                             if (!_qtyControllers.containsKey(item)) {
                               _qtyControllers[item] = TextEditingController(text: displayQty.toString());
                             }
-                            if (!_priceControllers.containsKey(item)) {
-                              _priceControllers[item] = TextEditingController(text: item.price.toStringAsFixed(2));
-                            }
                             return Card(
                               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                               elevation: 3,
@@ -454,7 +546,7 @@ class _HomePageState extends State<HomePage> {
                                   item.name,
                                   style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 17),
                                 ),
-                                subtitle: const Text('Tap to adjust quantity or delete'),
+                                subtitle: const Text('Tap to adjust'),
                                 trailing: Text(
                                   displayQty.toString(),
                                   style: TextStyle(
@@ -467,9 +559,7 @@ class _HomePageState extends State<HomePage> {
                                   if (expanded) {
                                     _snapshotQuantities[item] = item.quantity;
                                     _tempQuantities[item] = item.quantity;
-                                    _tempPrices[item] = item.price;
                                     _qtyControllers[item]!.text = item.quantity.toString();
-                                    _priceControllers[item]!.text = item.price.toStringAsFixed(2);
                                   } else {
                                     bool changed = false;
                                     final newQty = _tempQuantities[item] ?? item.quantity;
@@ -482,16 +572,10 @@ class _HomePageState extends State<HomePage> {
                                       item.quantity = newQty;
                                       changed = true;
                                     }
-                                    final newPrice = _tempPrices[item] ?? item.price;
-                                    if (newPrice != item.price) {
-                                      item.price = newPrice;
-                                      changed = true;
-                                    }
                                     if (changed) {
                                       await _saveItems();
                                     }
                                     _tempQuantities.remove(item);
-                                    _tempPrices.remove(item);
                                     _snapshotQuantities.remove(item);
                                   }
                                   setState(() {});
@@ -537,56 +621,15 @@ class _HomePageState extends State<HomePage> {
                                             IconButton(
                                               iconSize: 32,
                                               icon: const Icon(Icons.delete_outline, color: Color(0xfff7554d)),
-                                              onPressed: () => _deleteItem(index),
+                                              onPressed: () => _softDeleteItem(index),
                                             ),
                                           ],
                                         ),
-                                        const SizedBox(height: 24),
-                                        Row(
-                                          mainAxisAlignment: MainAxisAlignment.center,
-                                          children: [
-                                            const Text('Price (GHC): ', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                                            const SizedBox(width: 16),
-                                            SizedBox(
-                                              width: 120,
-                                              child: TextField(
-                                                keyboardType: TextInputType.numberWithOptions(decimal: true),
-                                                textAlign: TextAlign.center,
-                                                decoration: InputDecoration(
-                                                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                                                  contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                                                ),
-                                                controller: _priceControllers[item],
-                                                onChanged: (value) {
-                                                  final newPrice = double.tryParse(value) ?? item.price;
-                                                  _tempPrices[item] = newPrice;
-                                                  setState(() {});
-                                                },
-                                              ),
-                                            ),
-                                          ],
+                                        const SizedBox(height: 16),
+                                        ElevatedButton(
+                                          onPressed: () => _showAdvancedDialog(item),
+                                          child: const Text('Advanced'),
                                         ),
-                                      ],
-                                    ),
-                                  ),
-                                  const Divider(height: 1),
-                                  Padding(
-                                    padding: const EdgeInsets.all(16),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
-                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                          children: [
-                                            const Text('Quantity History', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
-                                            Text('${item.history.length} changes', style: const TextStyle(color: Color(0xff8c95a2))),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 12),
-                                        if (item.history.isEmpty)
-                                          const Text('No changes yet – adjust quantity to start tracking', style: TextStyle(color: Color(0xff8c95a2)))
-                                        else
-                                          SizedBox(height: 220, child: _buildHistoryChart(item)),
                                       ],
                                     ),
                                   ),
@@ -613,7 +656,7 @@ class ChartsPage extends StatefulWidget {
 }
 
 class _ChartsPageState extends State<ChartsPage> {
-  List<Item> _items = [];
+  List<Item> _allItems = [];
   String _currentPlan = 'free';
   late SharedPreferences _prefs;
   late Future<void> _loadFuture;
@@ -638,7 +681,7 @@ class _ChartsPageState extends State<ChartsPage> {
         loaded = (jsonDecode(json) as List).map((j) => Item.fromJson(j)).toList();
       } catch (_) {}
     }
-    setState(() => _items = loaded);
+    setState(() => _allItems = loaded);
   }
 
   int _totalSold(Item i) => i.history.fold(0, (sum, e) => sum + (e.oldQuantity > e.newQuantity ? e.oldQuantity - e.newQuantity : 0));
@@ -674,14 +717,15 @@ class _ChartsPageState extends State<ChartsPage> {
             );
           }
 
-          final withHistory = _items.where((i) => i.history.isNotEmpty).toList();
+          final withHistory = _allItems.where((i) => i.history.isNotEmpty).toList();
           final popular = List<Item>.from(withHistory)..sort((a, b) => _totalSold(b).compareTo(_totalSold(a)));
           final topPopular = popular.take(8).toList();
 
-          final valuable = List<Item>.from(_items.where((i) => i.price > 0 && i.quantity > 0))..sort((a, b) => _totalValue(b).compareTo(_totalValue(a)));
+          final activeItems = _allItems.where((i) => !i.deleted).toList();
+          final valuable = List<Item>.from(activeItems.where((i) => i.price > 0 && i.quantity > 0))..sort((a, b) => _totalValue(b).compareTo(_totalValue(a)));
           final topValuable = valuable.take(8).toList();
 
-          final totalValue = _items.fold(0.0, (sum, i) => sum + _totalValue(i));
+          final totalValue = activeItems.fold(0.0, (sum, i) => sum + _totalValue(i));
 
           return RefreshIndicator(
             onRefresh: _loadItems,
@@ -829,22 +873,42 @@ class _AccountPageState extends State<AccountPage> {
   String? _phone;
   String? _email;
   String _currentPlan = 'free';
+  List<Item> _allItems = [];
   late SharedPreferences _prefs;
+  late Future<void> _loadFuture;
 
   @override
   void initState() {
     super.initState();
-    _loadAccountInfo();
+    _loadFuture = _loadAccountInfo();
   }
 
   Future<void> _loadAccountInfo() async {
     _prefs = await SharedPreferences.getInstance();
+    await _loadItems();
     setState(() {
       _shopName = _prefs.getString('shop_name') ?? 'My Shelf Shop';
       _phone = _prefs.getString('shop_phone');
       _email = _prefs.getString('shop_email');
       _currentPlan = _prefs.getString('subscription_plan') ?? 'free';
     });
+  }
+
+  Future<void> _loadItems() async {
+    final String? json = _prefs.getString('shelf_items');
+    List<Item> loaded = [];
+    if (json != null) {
+      try {
+        loaded = (jsonDecode(json) as List).map((j) => Item.fromJson(j)).toList();
+      } catch (_) {}
+    }
+    setState(() => _allItems = loaded);
+  }
+
+  Future<void> _saveItems() async {
+    final String itemsJson = jsonEncode(_allItems.map((e) => e.toJson()).toList());
+    await _prefs.setString('shelf_items', itemsJson);
+    await _loadItems();
   }
 
   Future<void> _saveField(String key, String value) async {
@@ -955,6 +1019,7 @@ class _AccountPageState extends State<AccountPage> {
             onPressed: () async {
               Navigator.pop(context);
               await _prefs.remove('shelf_items');
+              await _loadItems();
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
@@ -965,6 +1030,27 @@ class _AccountPageState extends State<AccountPage> {
               }
             },
             child: const Text('Clear Shelf', style: TextStyle(color: Color(0xfff7554d))),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _restoreItem(Item item) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Restore Item?'),
+        content: Text('Restore "${item.name}" to your shelf?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              item.deleted = false;
+              await _saveItems();
+            },
+            child: const Text('Restore'),
           ),
         ],
       ),
@@ -1037,126 +1123,158 @@ class _AccountPageState extends State<AccountPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Account')),
-      body: SingleChildScrollView(
-        child: Column(
-          children: [
-            // Profile Header
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 40),
-              decoration: BoxDecoration(
-                color: const Color(0xff00a68a).withOpacity(0.1),
-              ),
-              child: Column(
-                children: [
-                  CircleAvatar(
-                    radius: 60,
-                    backgroundColor: const Color(0xff00a68a),
-                    child: const Icon(Icons.store_mall_directory, size: 80, color: Color(0xfff8f8f7)),
+      body: FutureBuilder(
+        future: _loadFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) return const Center(child: CircularProgressIndicator());
+          final deletedItems = _allItems.where((i) => i.deleted).toList();
+          return SingleChildScrollView(
+            child: Column(
+              children: [
+                // Profile Header
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 40),
+                  decoration: BoxDecoration(
+                    color: const Color(0xff00a68a).withOpacity(0.1),
                   ),
-                  const SizedBox(height: 16),
-                  Text(
-                    _shopName ?? 'My Shelf Shop',
-                    style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xff333e50)),
+                  child: Column(
+                    children: [
+                      CircleAvatar(
+                        radius: 60,
+                        backgroundColor: const Color(0xff00a68a),
+                        child: const Icon(Icons.store_mall_directory, size: 80, color: Color(0xfff8f8f7)),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        _shopName ?? 'My Shelf Shop',
+                        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xff333e50)),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _email ?? 'No email set',
+                        style: const TextStyle(fontSize: 16, color: Color(0xff8c95a2)),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _email ?? 'No email set',
-                    style: const TextStyle(fontSize: 16, color: Color(0xff8c95a2)),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
-            // Editable Fields
-            ListTile(
-              leading: const Icon(Icons.store, color: Color(0xff00a68a)),
-              title: const Text('Shop Name'),
-              subtitle: Text(_shopName ?? 'Not set'),
-              trailing: IconButton(icon: const Icon(Icons.edit), onPressed: _editShopName),
-            ),
-            const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.phone, color: Color(0xff00a68a)),
-              title: const Text('Phone Number'),
-              subtitle: Text(_phone ?? 'Not set'),
-              trailing: IconButton(icon: const Icon(Icons.edit), onPressed: _editPhone),
-            ),
-            const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.email, color: Color(0xff00a68a)),
-              title: const Text('Email'),
-              subtitle: Text(_email ?? 'Not set'),
-              trailing: IconButton(icon: const Icon(Icons.edit), onPressed: _editEmail),
-            ),
-            const SizedBox(height: 32),
-            // Clear Shelf Button
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xfff7554d),
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                  onPressed: _clearShelf,
-                  child: const Text('Clear All Shelf Items', style: TextStyle(fontSize: 16)),
                 ),
-              ),
+                const SizedBox(height: 24),
+                // Editable Fields
+                ListTile(
+                  leading: const Icon(Icons.store, color: Color(0xff00a68a)),
+                  title: const Text('Shop Name'),
+                  subtitle: Text(_shopName ?? 'Not set'),
+                  trailing: IconButton(icon: const Icon(Icons.edit), onPressed: _editShopName),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.phone, color: Color(0xff00a68a)),
+                  title: const Text('Phone Number'),
+                  subtitle: Text(_phone ?? 'Not set'),
+                  trailing: IconButton(icon: const Icon(Icons.edit), onPressed: _editPhone),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.email, color: Color(0xff00a68a)),
+                  title: const Text('Email'),
+                  subtitle: Text(_email ?? 'Not set'),
+                  trailing: IconButton(icon: const Icon(Icons.edit), onPressed: _editEmail),
+                ),
+                const SizedBox(height: 32),
+                // Clear Shelf Button
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xfff7554d),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                      onPressed: _clearShelf,
+                      child: const Text('Clear All Shelf Items', style: TextStyle(fontSize: 16)),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 32),
+                // Deleted Items Section
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Deleted Items', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      if (deletedItems.isEmpty)
+                        const Text('No deleted items', style: TextStyle(color: Color(0xff8c95a2))),
+                      ...deletedItems.map((item) => Card(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            child: ListTile(
+                              title: Text(item.name, style: const TextStyle(decoration: TextDecoration.lineThrough)),
+                              subtitle: Text('Qty: ${item.quantity} • Price: GHC ${item.price.toStringAsFixed(2)}'),
+                              trailing: ElevatedButton(
+                                onPressed: () => _restoreItem(item),
+                                child: const Text('Restore'),
+                              ),
+                            ),
+                          )),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 40),
+                // Plans Section
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Plans', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                      const Text('Unlock charts, unlimited items & more', style: TextStyle(color: Color(0xff8c95a2))),
+                      const SizedBox(height: 24),
+                      _buildPlanCard(
+                        title: 'Free',
+                        subtitle: 'Starter',
+                        price: 'GHC 0',
+                        period: 'forever',
+                        features: ['Up to 50 items', 'Basic tracking', 'No charts'],
+                        isCurrent: _currentPlan == 'free',
+                        buttonText: _currentPlan == 'free' ? 'Current' : 'Switch',
+                        onTap: () => _setPlan('free'),
+                        color: Colors.grey,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildPlanCard(
+                        title: 'Monthly',
+                        subtitle: 'Most popular',
+                        price: 'GHC 20',
+                        period: 'per month',
+                        features: ['Unlimited items', 'Full history & charts', 'Analytics', 'Cloud backup (soon)', '7-day free trial'],
+                        isCurrent: _currentPlan == 'monthly',
+                        buttonText: _currentPlan == 'monthly' ? 'Current' : 'Subscribe',
+                        onTap: () => _setPlan('monthly'),
+                        color: const Color(0xff00a68a),
+                        isPopular: true,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildPlanCard(
+                        title: 'Yearly',
+                        subtitle: 'Best value',
+                        price: 'GHC 200',
+                        period: 'per year (save GHC 40)',
+                        features: ['Everything in Monthly', 'Priority support', '7-day free trial'],
+                        isCurrent: _currentPlan == 'yearly',
+                        buttonText: _currentPlan == 'yearly' ? 'Current' : 'Subscribe',
+                        onTap: () => _setPlan('yearly'),
+                        color: const Color(0xffffc235),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 60),
+              ],
             ),
-            const SizedBox(height: 40),
-            // Plans Section
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Plans', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                  const Text('Unlock charts, unlimited items & more', style: TextStyle(color: Color(0xff8c95a2))),
-                  const SizedBox(height: 24),
-                  _buildPlanCard(
-                    title: 'Free',
-                    subtitle: 'Starter',
-                    price: 'GHC 0',
-                    period: 'forever',
-                    features: ['Up to 50 items', 'Basic tracking', 'No charts'],
-                    isCurrent: _currentPlan == 'free',
-                    buttonText: _currentPlan == 'free' ? 'Current' : 'Switch',
-                    onTap: () => _setPlan('free'),
-                    color: Colors.grey,
-                  ),
-                  const SizedBox(height: 16),
-                  _buildPlanCard(
-                    title: 'Monthly',
-                    subtitle: 'Most popular',
-                    price: 'GHC 20',
-                    period: 'per month',
-                    features: ['Unlimited items', 'Full history & charts', 'Analytics', 'Cloud backup (soon)'],
-                    isCurrent: _currentPlan == 'monthly',
-                    buttonText: _currentPlan == 'monthly' ? 'Current' : 'Subscribe',
-                    onTap: () => _setPlan('monthly'),
-                    color: const Color(0xff00a68a),
-                    isPopular: true,
-                  ),
-                  const SizedBox(height: 16),
-                  _buildPlanCard(
-                    title: 'Yearly',
-                    subtitle: 'Best value',
-                    price: 'GHC 200',
-                    period: 'per year (save GHC 40)',
-                    features: ['Everything in Monthly', 'Priority support'],
-                    isCurrent: _currentPlan == 'yearly',
-                    buttonText: _currentPlan == 'yearly' ? 'Current' : 'Subscribe',
-                    onTap: () => _setPlan('yearly'),
-                    color: const Color(0xffffc235),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 60),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
