@@ -122,7 +122,7 @@ class Item {
     required this.quantity,
     required this.price,
     List<HistoryEntry>? history,
-  }) : history = history ?? [], price = price;
+  }) : history = history ?? [];
 
   factory Item.fromJson(Map<String, dynamic> json) => Item(
         name: json['name'],
