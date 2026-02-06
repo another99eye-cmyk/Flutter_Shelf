@@ -17,9 +17,16 @@ dependencies:
   fl_chart: ^0.70.2
 
 dev_dependencies:
+  flutter_launcher_icons: ^0.14.1
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/logo.png"  # Path to your logo file
+  min_sdk_android: 21  # Optional, for Android
